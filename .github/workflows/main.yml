@@ -1,0 +1,30 @@
+name: Sync to CNB
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  sync-to-cnb:
+    runs-on: ubuntu-latest # 使用 GitHub 托管的 Ubuntu 虚拟机
+
+    steps:
+      # 步骤 1: 检出当前 GitHub 仓库的代码
+      - name: Checkout source code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 获取所有历史记录，这对 git push 是必须的
+
+      # 步骤 2: 配置 Git 用户信息 (可选但推荐)
+      - name: Setup Git Config
+        run: |
+          git config --global user.name "ufun"
+          git config --global user.email "274409508@qq.com"
+
+      # 步骤 4: 添加华为云远程仓库并推送代码
+      - name: Push to CNB
+        env:
+          CNB_REPO_URL: https://cnb:${{ secrets.CNB_ACCESS_TOKEN }}@cnb.cool/ufunnet/shop_ufunet.git
+        run: |
+          git remote add cnb ${CNB_REPO_URL}
+          git push --force cnb main:main
