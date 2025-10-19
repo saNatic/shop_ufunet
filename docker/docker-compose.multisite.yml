@@ -1,0 +1,176 @@
+version: '3.5'
+
+# 多站点独立部署配置文件
+# 特点：
+# 1. 使用预构建的镜像（nginx, php-fpm, workspace等）
+# 2. 每个项目独立的数据库和Redis（数据隔离）
+# 3. 通过 COMPOSE_PROJECT_NAME 区分不同项目
+# 4. 每个项目使用不同的端口号
+
+# 使用方法：
+# 1. 复制 env.multisite.example 为 .env.site1, .env.site2 等
+# 2. 修改每个 .env 文件中的项目名称、端口号、数据库配置
+# 3. 部署: docker-compose --env-file .env.site1 -f docker-compose.multisite.yml up -d
+
+networks:
+  frontend:
+    driver: ${NETWORKS_DRIVER}
+  backend:
+    driver: ${NETWORKS_DRIVER}
+
+volumes:
+  mysql:
+    driver: ${VOLUMES_DRIVER}
+  redis:
+    driver: ${VOLUMES_DRIVER}
+
+services:
+  ### MySQL ################################################
+  # 每个项目独立的 MySQL 实例
+  mysql:
+    image: mysql:${MYSQL_VERSION:-latest}
+    container_name: ${COMPOSE_PROJECT_NAME}_mysql
+    environment:
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - TZ=${WORKSPACE_TIMEZONE}
+    volumes:
+      - ${DATA_PATH_HOST}/mysql:/var/lib/mysql
+      - ${MYSQL_ENTRYPOINT_INITDB}:/docker-entrypoint-initdb.d
+    ports:
+      - "${MYSQL_PORT}:3306"
+    networks:
+      - backend
+    restart: unless-stopped
+
+  ### Redis ################################################
+  # 每个项目独立的 Redis 实例
+  redis:
+    image: redis:alpine
+    container_name: ${COMPOSE_PROJECT_NAME}_redis
+    command: --requirepass ${REDIS_PASSWORD}
+    volumes:
+      - ${DATA_PATH_HOST}/redis:/data
+    ports:
+      - "${REDIS_PORT}:6379"
+    networks:
+      - backend
+    restart: unless-stopped
+
+  ### NGINX Server #########################################
+  # 使用预构建镜像，每个项目独立 nginx 实例
+  nginx:
+    image: ${REGISTRY:-localhost}/beikeshop-nginx:${IMAGE_TAG:-latest}
+    container_name: ${COMPOSE_PROJECT_NAME}_nginx
+    volumes:
+      # 只挂载当前项目目录
+      - ${APP_CODE_PATH_HOST}:${APP_CODE_PATH_CONTAINER}${APP_CODE_CONTAINER_FLAG}
+      - ${NGINX_SITES_PATH}:/etc/nginx/sites-available
+      - ${NGINX_SSL_PATH}:/etc/nginx/ssl
+      - ${NGINX_HOST_LOG_PATH}:/var/log/nginx
+    ports:
+      - "${NGINX_HOST_HTTP_PORT}:80"
+      - "${NGINX_HOST_HTTPS_PORT}:443"
+    depends_on:
+      - php-fpm
+    networks:
+      - frontend
+      - backend
+    restart: unless-stopped
+
+  ### PHP-FPM ##############################################
+  # 使用预构建镜像，每个项目独立 PHP-FPM 实例
+  php-fpm:
+    image: ${REGISTRY:-localhost}/beikeshop-php-fpm:${IMAGE_TAG:-latest}
+    container_name: ${COMPOSE_PROJECT_NAME}_php-fpm
+    volumes:
+      - ${APP_CODE_PATH_HOST}:${APP_CODE_PATH_CONTAINER}${APP_CODE_CONTAINER_FLAG}
+      - ./php-fpm/php${PHP_VERSION}.ini:/usr/local/etc/php/php.ini
+    expose:
+      - "9000"
+    extra_hosts:
+      - "dockerhost:${DOCKER_HOST_IP}"
+    environment:
+      - PHP_IDE_CONFIG=${PHP_IDE_CONFIG}
+    networks:
+      - backend
+    restart: unless-stopped
+
+  ### PHP Worker ############################################
+  # 使用预构建镜像，每个项目独立 Worker 实例
+  php-worker:
+    image: ${REGISTRY:-localhost}/beikeshop-php-worker:${IMAGE_TAG:-latest}
+    container_name: ${COMPOSE_PROJECT_NAME}_php-worker
+    volumes:
+      - ${APP_CODE_PATH_HOST}:${APP_CODE_PATH_CONTAINER}${APP_CODE_CONTAINER_FLAG}
+      - ./php-worker/supervisord.d:/etc/supervisord.d
+    depends_on:
+      - mysql
+      - redis
+    extra_hosts:
+      - "dockerhost:${DOCKER_HOST_IP}"
+    networks:
+      - backend
+    restart: unless-stopped
+
+  ### Workspace Utilities ##################################
+  # 使用预构建镜像（开发环境可选）
+  workspace:
+    image: ${REGISTRY:-localhost}/beikeshop-workspace:${IMAGE_TAG:-latest}
+    container_name: ${COMPOSE_PROJECT_NAME}_workspace
+    volumes:
+      - ${APP_CODE_PATH_HOST}:${APP_CODE_PATH_CONTAINER}${APP_CODE_CONTAINER_FLAG}
+    ports:
+      - "${WORKSPACE_SSH_PORT}:22"
+    tty: true
+    extra_hosts:
+      - "dockerhost:${DOCKER_HOST_IP}"
+    environment:
+      - PHP_IDE_CONFIG=${PHP_IDE_CONFIG}
+      - CHOKIDAR_USEPOLLING=true
+    networks:
+      - frontend
+      - backend
+
+  ### phpMyAdmin ###########################################
+  # 数据库管理工具（可选，生产环境建议关闭）
+  phpmyadmin:
+    image: phpmyadmin:latest
+    container_name: ${COMPOSE_PROJECT_NAME}_phpmyadmin
+    environment:
+      - PMA_HOST=mysql
+      - PMA_USER=${MYSQL_USER}
+      - PMA_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MAX_EXECUTION_TIME=${PMA_MAX_EXECUTION_TIME:-600}
+      - MEMORY_LIMIT=${PMA_MEMORY_LIMIT:-256M}
+      - UPLOAD_LIMIT=${PMA_UPLOAD_LIMIT:-2G}
+    ports:
+      - "${PMA_PORT}:80"
+    depends_on:
+      - mysql
+    networks:
+      - frontend
+      - backend
+    profiles:
+      - tools
+
+  ### Redis Web UI ##########################################
+  # Redis 管理工具（可选，生产环境建议关闭）
+  redis-webui:
+    image: patrikx3/p3x-redis-ui:latest
+    container_name: ${COMPOSE_PROJECT_NAME}_redis-webui
+    environment:
+      - P3X_REDIS_UI_DB_0_HOST=redis
+      - P3X_REDIS_UI_DB_0_PORT=6379
+      - P3X_REDIS_UI_DB_0_PASSWORD=${REDIS_PASSWORD}
+    ports:
+      - "${REDIS_WEBUI_PORT}:7843"
+    depends_on:
+      - redis
+    networks:
+      - backend
+    profiles:
+      - tools
