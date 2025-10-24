@@ -50,8 +50,21 @@ ENV PGID ${PGID}
 RUN set -xe; \
     apt-get update -yqq && \
     pecl channel-update pecl.php.net && \
-    groupadd -g ${PGID} laradock && \
-    useradd -l -u ${PUID} -g laradock -m laradock -G docker_env && \
+    if ! getent group laradock > /dev/null 2>&1; then \
+        if getent group ${PGID} > /dev/null 2>&1; then \
+            groupmod -n laradock $(getent group ${PGID} | cut -d: -f1); \
+        else \
+            groupadd -g ${PGID} laradock; \
+        fi \
+    fi && \
+    if ! getent passwd laradock > /dev/null 2>&1; then \
+        if getent passwd ${PUID} > /dev/null 2>&1; then \
+            usermod -l laradock -d /home/laradock -m $(getent passwd ${PUID} | cut -d: -f1); \
+        else \
+            useradd -l -u ${PUID} -g laradock -m laradock; \
+        fi \
+    fi && \
+    usermod -a -G docker_env laradock && \
     usermod -p "*" laradock -s /bin/bash && \
     apt-get install -yqq \
       apt-utils \
